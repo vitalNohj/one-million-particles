@@ -4,6 +4,8 @@ import * as THREE from 'three';
 import quadVertexShader from '../shaders/compute/quad.vert';
 import positionFragmentShader from '../shaders/compute/position.frag';
 import velocityFragmentShader from '../shaders/compute/velocity.frag';
+import particleVertexShader from '../shaders/render/particle.vert';
+import particleFragmentShader from '../shaders/render/particle.frag';
 
 /**
  * Manages shader materials for the GPGPU particle system
@@ -30,7 +32,11 @@ export class ShaderManager {
       uNoiseFrequency: { value: 0.15 },
       uNoiseAmplitude: { value: 0.002 },
       uTime: { value: 0 },
-      uDeltaTime: { value: 0 }
+      uDeltaTime: { value: 0 },
+      uGravity: { value: new THREE.Vector3(0, 0, 0) },
+      uAttractorPosition: { value: new THREE.Vector3(0, 0, 0) },
+      uAttractorStrength: { value: 0.0 },
+      uAttractorRadius: { value: 100.0 }
     };
   }
 
@@ -42,8 +48,11 @@ export class ShaderManager {
     return {
       uPositionsTexture: { value: null },
       uColorTexture: { value: null },
+      uHasColorTexture: { value: false },
       uHighlightColor: { value: new THREE.Vector3(0.3, 0.6, 1.0) },
-      uOpacity: { value: 0.6 }
+      uOpacity: { value: 0.6 },
+      uPointSize: { value: 2.0 },
+      uPixelRatio: { value: Math.min(window.devicePixelRatio, 2.0) }
     };
   }
 
@@ -90,70 +99,37 @@ export class ShaderManager {
   }
 
   /**
-   * Create particle render material using onBeforeCompile for Three.js integration
+   * Create particle render material
    * @param {THREE.Texture} colorTexture - Texture for particle coloring
-   * @returns {THREE.PointsMaterial}
+   * @returns {THREE.ShaderMaterial}
    */
   createParticleMaterial(colorTexture = null) {
-    const material = new THREE.PointsMaterial({
-      size: 0.04,
-      opacity: 0.6,
+    if (this.materials.has('particle')) {
+      const material = this.materials.get('particle');
+      if (colorTexture) {
+        material.uniforms.uColorTexture.value = colorTexture;
+        material.uniforms.uHasColorTexture.value = true;
+      }
+      return material;
+    }
+
+    const material = new THREE.ShaderMaterial({
+      vertexShader: particleVertexShader,
+      fragmentShader: particleFragmentShader,
+      uniforms: {
+        ...this._getRenderUniforms(),
+        uColorTexture: { value: colorTexture },
+        uHasColorTexture: { value: !!colorTexture }
+      },
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending
     });
 
-    // Store uniforms for external access
-    const customUniforms = {
-      uPositionsTexture: { value: null },
-      uColorTexture: { value: colorTexture },
-      uHighlightColor: { value: new THREE.Vector3(0.3, 0.6, 1.0) }
-    };
+    // Alias for compatibility with existing code that accesses userData.uniforms
+    material.userData.uniforms = material.uniforms;
 
-    // Attach uniforms to material for external access
-    material.userData.uniforms = customUniforms;
-
-    material.onBeforeCompile = (shader) => {
-      // Merge our uniforms with Three.js's
-      shader.uniforms = {
-        ...shader.uniforms,
-        ...customUniforms
-      };
-
-      // Inject vertex shader modifications
-      shader.vertexShader = `
-        uniform sampler2D uPositionsTexture;
-        varying vec2 vUv;
-        varying float vTemperature;
-        ${shader.vertexShader}
-      `.replace(
-        '#include <begin_vertex>',
-        `
-          #include <begin_vertex>
-          vec4 posData = texture2D(uPositionsTexture, position.xy);
-          transformed = posData.rgb;
-          vTemperature = posData.a;
-          vUv = uv;
-        `
-      );
-
-      // Inject fragment shader modifications
-      shader.fragmentShader = `
-        uniform sampler2D uColorTexture;
-        uniform vec3 uHighlightColor;
-        varying float vTemperature;
-        varying vec2 vUv;
-        ${shader.fragmentShader}
-      `.replace(
-        'vec4 diffuseColor = vec4( diffuse, opacity );',
-        `
-          vec3 texColor = texture2D(uColorTexture, vUv).rgb;
-          vec3 finalColor = mix(texColor, uHighlightColor, vTemperature / 1.5);
-          vec4 diffuseColor = vec4(finalColor, opacity);
-        `
-      );
-    };
-
+    this.materials.set('particle', material);
     return material;
   }
 

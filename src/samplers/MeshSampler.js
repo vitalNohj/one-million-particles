@@ -71,12 +71,15 @@ export class MeshSampler extends BaseSampler {
     }
 
     const data = new Float32Array(count * 4);
+    this._sampledUVs = new Float32Array(count * 2);
+    const tempUV = new THREE.Vector2();
 
     for (let i = 0; i < count; i++) {
       const i4 = i * 4;
+      const i2 = i * 2;
       
       // Sample a point on the mesh surface
-      this.sampler.sample(this._tempPosition, this._tempNormal);
+      this.sampler.sample(this._tempPosition, this._tempNormal, undefined, tempUV);
       
       // Apply mesh world transform
       this._tempPosition.applyMatrix4(this.mesh.matrixWorld);
@@ -85,6 +88,9 @@ export class MeshSampler extends BaseSampler {
       data[i4 + 1] = this._tempPosition.y;
       data[i4 + 2] = this._tempPosition.z;
       data[i4 + 3] = 0; // Reserved for metadata
+
+      this._sampledUVs[i2 + 0] = tempUV.x;
+      this._sampledUVs[i2 + 1] = tempUV.y;
     }
 
     return data;
@@ -117,28 +123,21 @@ export class MeshSampler extends BaseSampler {
   }
 
   /**
-   * Get UVs based on mesh bounding box
+   * Get UVs (returns cached UVs from last sample if available)
    * @param {number} count
-   * @param {Float32Array} positions
    * @returns {Float32Array}
    */
-  getUVs(count, positions) {
-    const uvs = new Float32Array(count * 2);
-    const size = this.getSize();
-    const min = this.boundingBox.min;
-    
-    for (let i = 0; i < count; i++) {
-      const i2 = i * 2;
-      const i4 = i * 4;
-      
-      // Map X and Y to UV space
-      const x = positions[i4 + 0];
-      const y = positions[i4 + 1];
-      
-      uvs[i2 + 0] = size.x > 0 ? (x - min.x) / size.x : 0.5;
-      uvs[i2 + 1] = size.y > 0 ? (y - min.y) / size.y : 0.5;
+  getUVs(count) {
+    if (this._sampledUVs && this._sampledUVs.length === count * 2) {
+      return this._sampledUVs;
     }
     
+    // Fallback: return default UVs (0.5, 0.5) if no cached UVs
+    // We cannot reliably recalculate UVs without the original random sampling sequence
+    const uvs = new Float32Array(count * 2);
+    for (let i = 0; i < count * 2; i++) {
+        uvs[i] = 0.5;
+    }
     return uvs;
   }
 

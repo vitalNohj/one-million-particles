@@ -2,6 +2,8 @@
 // Reads particle positions from GPGPU texture
 
 uniform sampler2D uPositionsTexture;
+uniform float uPointSize;
+uniform float uPixelRatio;
 
 varying vec2 vUv;
 varying float vTemperature;
@@ -19,7 +21,8 @@ void main() {
   vec4 mvPosition = modelViewMatrix * vec4(particlePosition, 1.0);
   gl_Position = projectionMatrix * mvPosition;
   
-  // Point size (can be made uniform for control)
-  gl_PointSize = 1.0;
+  // Point size with attenuation
+  gl_PointSize = uPointSize * uPixelRatio;
+  gl_PointSize *= (1.0 / -mvPosition.z);
 }
 

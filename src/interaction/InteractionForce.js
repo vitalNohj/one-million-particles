@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PHYSICS } from '../core/constants.js';
+import { Force } from './Force.js';
 
 /**
  * Types of interaction forces
@@ -15,7 +16,7 @@ export const ForceType = {
  * Represents a force that can be applied to particles
  * Used for pointer interaction and other dynamic effects
  */
-export class InteractionForce {
+export class InteractionForce extends Force {
   /**
    * @param {Object} options - Force configuration
    * @param {string} options.type - Force type (ForceType enum)
@@ -24,6 +25,7 @@ export class InteractionForce {
    * @param {number} options.falloff - Falloff exponent (higher = sharper falloff)
    */
   constructor(options = {}) {
+    super('interaction');
     this.type = options.type ?? ForceType.REPEL;
     this.strength = options.strength ?? 1.0;
     this.radius = options.radius ?? PHYSICS.POINTER_INFLUENCE_RADIUS;
@@ -31,14 +33,11 @@ export class InteractionForce {
     
     this.position = new THREE.Vector3();
     this.velocity = new THREE.Vector3();
-    this.enabled = true;
     
-    // For shader uniforms
-    this._uniformData = {
-      position: new THREE.Vector3(),
-      positionStart: new THREE.Vector3(),
-      strength: this.strength,
-      radius: this.radius
+    // Shader uniforms
+    this.uniforms = {
+      uPointer: { value: new THREE.Vector3() },
+      uPointerStart: { value: new THREE.Vector3() }
     };
   }
 
@@ -56,8 +55,8 @@ export class InteractionForce {
    */
   setFromPointer(pointerHandler) {
     this.position.copy(pointerHandler.getWorldPosition());
-    this._uniformData.position.copy(this.position);
-    this._uniformData.positionStart.copy(pointerHandler.getStartPosition());
+    this.uniforms.uPointer.value.copy(this.position);
+    this.uniforms.uPointerStart.value.copy(pointerHandler.getStartPosition());
   }
 
   /**
@@ -131,9 +130,12 @@ export class InteractionForce {
    * @returns {Object}
    */
   getUniformData() {
-    this._uniformData.strength = this.enabled ? this.strength : 0;
-    this._uniformData.radius = this.radius;
-    return this._uniformData;
+    return {
+      position: this.uniforms.uPointer.value,
+      positionStart: this.uniforms.uPointerStart.value,
+      strength: this.enabled ? this.strength : 0,
+      radius: this.radius
+    };
   }
 
   /**
@@ -141,10 +143,7 @@ export class InteractionForce {
    * @returns {Object}
    */
   getUniforms() {
-    return {
-      uPointer: { value: this._uniformData.position },
-      uPointerStart: { value: this._uniformData.positionStart }
-    };
+    return this.uniforms;
   }
 
   /**

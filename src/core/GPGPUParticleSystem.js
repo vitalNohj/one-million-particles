@@ -145,6 +145,12 @@ export class GPGPUParticleSystem {
   async _generateParticleData() {
     // Sample positions from geometry
     const positionData = this._sampler.sample(this._actualCount);
+    
+    // Cache UVs for particle point creation
+    if (this._sampler.getUVs) {
+      this._cachedUVs = this._sampler.getUVs(this._actualCount, positionData);
+    }
+
     const velocityData = createVelocityData(this._actualCount);
 
     // Dispose old textures
@@ -158,6 +164,8 @@ export class GPGPUParticleSystem {
       THREE.RGBAFormat,
       THREE.FloatType
     );
+    this._originalPositionsTexture.minFilter = THREE.NearestFilter;
+    this._originalPositionsTexture.magFilter = THREE.NearestFilter;
     this._originalPositionsTexture.needsUpdate = true;
 
     this._positionsTexture = new THREE.DataTexture(
@@ -167,6 +175,8 @@ export class GPGPUParticleSystem {
       THREE.RGBAFormat,
       THREE.FloatType
     );
+    this._positionsTexture.minFilter = THREE.NearestFilter;
+    this._positionsTexture.magFilter = THREE.NearestFilter;
     this._positionsTexture.needsUpdate = true;
 
     this._velocitiesTexture = new THREE.DataTexture(
@@ -176,6 +186,8 @@ export class GPGPUParticleSystem {
       THREE.RGBAFormat,
       THREE.FloatType
     );
+    this._velocitiesTexture.minFilter = THREE.NearestFilter;
+    this._velocitiesTexture.magFilter = THREE.NearestFilter;
     this._velocitiesTexture.needsUpdate = true;
 
     // Update shader uniforms
@@ -263,14 +275,11 @@ export class GPGPUParticleSystem {
       this._textureWidth,
       this._textureHeight,
       (i) => {
-        // Get UVs from sampler if available
-        if (this._sampler) {
-          const bbox = this._sampler.getBoundingBox();
-          const size = this._sampler.getSize();
-          // Return normalized position-based UVs (will be refined in sampler)
+        // Get UVs from cached sampler data
+        if (this._cachedUVs) {
           return [
-            (i % this._textureWidth) / this._textureWidth,
-            Math.floor(i / this._textureWidth) / this._textureHeight
+            this._cachedUVs[i * 2],
+            this._cachedUVs[i * 2 + 1]
           ];
         }
         return [0, 0];
@@ -293,10 +302,13 @@ export class GPGPUParticleSystem {
     }
 
     // Update particle material uniforms
-    if (this._particleMaterial.userData.uniforms) {
-      this._particleMaterial.userData.uniforms.uPositionsTexture.value = 
+    if (this._particleMaterial.uniforms) {
+      this._particleMaterial.uniforms.uPositionsTexture.value = 
         this.renderTargetPool.getReadTarget('position').texture;
     }
+
+    // Clear cached UVs
+    this._cachedUVs = null;
   }
 
   /**
@@ -335,6 +347,8 @@ export class GPGPUParticleSystem {
       THREE.RGBAFormat,
       THREE.FloatType
     );
+    this._originalPositionsTexture.minFilter = THREE.NearestFilter;
+    this._originalPositionsTexture.magFilter = THREE.NearestFilter;
     this._originalPositionsTexture.needsUpdate = true;
 
     // Update uniforms
@@ -443,8 +457,8 @@ export class GPGPUParticleSystem {
     this._velocityMaterial.uniforms.uPositionsTexture.value = posReadTarget.texture;
 
     // Update particle material
-    if (this._particleMaterial.userData.uniforms) {
-      this._particleMaterial.userData.uniforms.uPositionsTexture.value = posReadTarget.texture;
+    if (this._particleMaterial.uniforms) {
+      this._particleMaterial.uniforms.uPositionsTexture.value = posReadTarget.texture;
     }
 
     this.renderer.setRenderTarget(null);
@@ -491,6 +505,83 @@ export class GPGPUParticleSystem {
       this._velocitiesTexture.dispose();
       this._velocitiesTexture = null;
     }
+  }
+
+  /**
+   * Set particle point size
+   * @param {number} size - Point size
+   */
+  setPointSize(size) {
+    if (this._particleMaterial?.uniforms) {
+      this._particleMaterial.uniforms.uPointSize.value = size;
+    }
+  }
+
+  /**
+   * Set particle opacity
+   * @param {number} opacity - Opacity (0.0 to 1.0)
+   */
+  setOpacity(opacity) {
+    if (this._particleMaterial?.uniforms) {
+      this._particleMaterial.uniforms.uOpacity.value = opacity;
+    }
+  }
+
+  /**
+   * Set highlight color
+   * @param {number} r - Red (0-1)
+   * @param {number} g - Green (0-1)
+   * @param {number} b - Blue (0-1)
+   */
+  setHighlightColor(r, g, b) {
+    if (this._particleMaterial?.uniforms) {
+      this._particleMaterial.uniforms.uHighlightColor.value.setRGB(r, g, b);
+    }
+  }
+
+  /**
+   * Set noise parameters
+   * @param {number} [frequency] - Noise frequency
+   * @param {number} [amplitude] - Noise amplitude
+   */
+  setNoiseParams(frequency, amplitude) {
+    if (this._positionMaterial?.uniforms) {
+      if (frequency !== undefined) this._positionMaterial.uniforms.uNoiseFrequency.value = frequency;
+      if (amplitude !== undefined) this._positionMaterial.uniforms.uNoiseAmplitude.value = amplitude;
+    }
+  }
+
+  /**
+   * Add a force to the simulation
+   * @param {Force} force - Force instance
+   */
+  addForce(force) {
+    if (!force || !force.getUniforms()) return;
+
+    const forceUniforms = force.getUniforms();
+    const velocityMat = this.shaderManager.getMaterial('velocity');
+    const positionMat = this.shaderManager.getMaterial('position');
+    
+    // Link force uniforms to shader materials
+    for (const [name, uniform] of Object.entries(forceUniforms)) {
+      if (velocityMat && velocityMat.uniforms[name]) {
+        velocityMat.uniforms[name] = uniform; 
+      }
+      if (positionMat && positionMat.uniforms[name]) {
+        positionMat.uniforms[name] = uniform;
+      }
+    }
+  }
+
+  /**
+   * Remove a force from the simulation (unlinks uniforms)
+   * @param {Force} force - Force instance
+   */
+  removeForce(force) {
+     // Since we linked by reference, we can't easily "unlink" to restore defaults 
+     // without knowing what the defaults were. 
+     // For now, this method might be a no-op or we could reset to ShaderManager defaults.
+     // Implementing as no-op for now as proper unlinking requires more state tracking.
   }
 
   /**
