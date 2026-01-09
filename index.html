@@ -35,6 +35,10 @@
     .controls-slider { width: 100%; margin-bottom: 8px; }
     .controls-input { width: 100%; background-color: rgba(215, 215, 215, 0.1); border: 1px solid rgba(215, 215, 215, 0.3); color: #d7d7d7; padding: 6px 8px; border-radius: 4px; font-size: 14px; font-family: 'Times New Roman', Times, serif; }
     .controls-input:focus { outline: none; border-color: rgba(215, 215, 215, 0.6); }
+    .controls-textarea { width: 100%; background-color: rgba(215, 215, 215, 0.1); border: 1px solid rgba(215, 215, 215, 0.3); color: #d7d7d7; padding: 6px 8px; border-radius: 4px; font-size: 14px; font-family: 'Times New Roman', Times, serif; resize: vertical; min-height: 60px; }
+    .controls-textarea:focus { outline: none; border-color: rgba(215, 215, 215, 0.6); }
+    .controls-checkbox { display: flex; align-items: center; margin-top: 8px; font-size: 12px; }
+    .controls-checkbox input[type="checkbox"] { margin-right: 8px; }
     @media only screen and (hover: none) {
       .guide { bottom: 15% }
       .mouse { display: none; }
@@ -87,6 +91,18 @@
     </div>
     <div class="controls">
       <h3>Particle Controls</h3>
+      <div class="controls-group">
+        <div class="controls-label">
+          <span>Text</span>
+        </div>
+        <textarea id="textInput" class="controls-textarea" placeholder="Enter text (use newlines for multiple lines)">1,000,000&#10;PARTICLES</textarea>
+      </div>
+      <div class="controls-group">
+        <div class="controls-checkbox">
+          <input type="checkbox" id="runtimeModeCheckbox" checked>
+          <label for="runtimeModeCheckbox">Runtime Mode (smooth transition)</label>
+        </div>
+      </div>
       <div class="controls-group">
         <div class="controls-label">
           <span>Particle Count</span>
@@ -363,7 +379,78 @@
       bevelEnabled: true,
     }
     
-    function setTextGeometry(particleCount) {
+    // Current text state
+    let currentText = "1,000,000\nPARTICLES";
+    let isRuntimeMode = true;
+    let isUpdatingText = false;
+    
+    // Function to process text input and create geometry from multi-line text
+    function processTextInput(text) {
+      if (!fontConfig.font) {
+        console.warn("Font not loaded yet");
+        return null;
+      }
+      
+      const lines = text.split('\n').filter(line => line.trim().length > 0);
+      if (lines.length === 0) {
+        return null;
+      }
+      
+      const geometries = [];
+      const lineHeight = fontConfig.size * 1.2; // Spacing between lines
+      let totalHeight = 0;
+      const lineGeometries = [];
+      
+      // Create geometry for each line
+      for (let i = 0; i < lines.length; i++) {
+        const lineGeometry = new TextGeometry(lines[i], fontConfig);
+        lineGeometries.push({ geometry: lineGeometry, index: i });
+      }
+      
+      // Calculate total height and center vertically
+      let maxWidth = 0;
+      for (const { geometry } of lineGeometries) {
+        geometry.computeBoundingBox();
+        const width = geometry.boundingBox.max.x - geometry.boundingBox.min.x;
+        const height = geometry.boundingBox.max.y - geometry.boundingBox.min.y;
+        maxWidth = Math.max(maxWidth, width);
+        totalHeight += height;
+      }
+      totalHeight += (lines.length - 1) * lineHeight;
+      
+      // Position each line vertically
+      let currentY = totalHeight / 2;
+      for (const { geometry, index } of lineGeometries) {
+        geometry.computeBoundingBox();
+        const height = geometry.boundingBox.max.y - geometry.boundingBox.min.y;
+        const offset = new THREE.Vector3(0, currentY - height / 2, 0);
+        
+        for (let i = 0; i < geometry.attributes.position.count; i++) {
+          const i3 = i * 3;
+          geometry.attributes.position.array[i3 + 0] += offset.x;
+          geometry.attributes.position.array[i3 + 1] += offset.y;
+          geometry.attributes.position.array[i3 + 2] += offset.z;
+        }
+        geometry.attributes.position.needsUpdate = true;
+        
+        currentY -= (height + lineHeight);
+        geometries.push(geometry);
+      }
+      
+      // Merge all line geometries
+      if (geometries.length === 0) return null;
+      const mergedGeometry = geometries.length === 1 
+        ? geometries[0] 
+        : BufferGeometryUtils.mergeGeometries(geometries);
+      
+      return mergedGeometry;
+    }
+    
+    // Initialize text geometry - full reset path
+    function initializeTextGeometry(inputText, particleCount) {
+      if (isUpdatingText) return;
+      isUpdatingText = true;
+      
       // Calculate texture dimensions for the desired particle count
       const dims = calculateTextureDimensions(particleCount);
       fboWidth = dims.width;
@@ -373,23 +460,25 @@
       // Update texture resolution uniform
       fboUniforms.uTextureResolution.value.set(fboWidth, fboHeight);
       
-      const text1Geometry = new TextGeometry("1,000,000", fontConfig);
-      const text2Geometry = new TextGeometry("PARTICLES", fontConfig);
-      const text2Offset = new THREE.Vector3(-2, -4.5, 0);
-      for (let i = 0; i < text2Geometry.attributes.position.count; i++) {
-        const i3 = i * 3;
-        text2Geometry.attributes.position.array[i3 + 0] += text2Offset.x;
-        text2Geometry.attributes.position.array[i3 + 1] += text2Offset.y;
+      // Process text input to create geometry
+      const mergedGeometry = processTextInput(inputText);
+      if (!mergedGeometry) {
+        isUpdatingText = false;
+        return;
       }
-      text2Geometry.attributes.position.needsUpdate = true;
-      text.geometry = BufferGeometryUtils.mergeGeometries([text1Geometry, text2Geometry]);
-      text.geometry.computeBoundingBox();
-      const textWidth = text.geometry.boundingBox.max.x - text.geometry.boundingBox.min.x;
-      const textHeight = text.geometry.boundingBox.max.y - text.geometry.boundingBox.min.y;
-      text.position.x -= textWidth / 2 + text2Offset.x; 
-      text.position.y -= textHeight / 2 + text2Offset.y; 
+      
+      // Create a temporary mesh for surface sampling
+      const tempTextMesh = new THREE.Mesh(mergedGeometry, new THREE.MeshBasicMaterial());
+      tempTextMesh.geometry.computeBoundingBox();
+      const textWidth = tempTextMesh.geometry.boundingBox.max.x - tempTextMesh.geometry.boundingBox.min.x;
+      const textHeight = tempTextMesh.geometry.boundingBox.max.y - tempTextMesh.geometry.boundingBox.min.y;
+      
+      // Center the text mesh for sampling
+      tempTextMesh.position.x = -textWidth / 2;
+      tempTextMesh.position.y = -textHeight / 2;
+      tempTextMesh.position.z = 0;
 
-      const surfaceSampler = new MeshSurfaceSampler(text).build();
+      const surfaceSampler = new MeshSurfaceSampler(tempTextMesh).build();
       const geometry = new THREE.BufferGeometry();
       const positions = new Float32Array(COUNT * 3);
       const uvs = new Float32Array(COUNT * 2);
@@ -402,11 +491,11 @@
         const i3 = i * 3;
         const i4 = i * 4;
         
-        // sample a postion from the surface of the text
+        // sample a position from the surface of the text
         surfaceSampler.sample(tempPosition);
         const [x, y, z] = tempPosition;
 
-        // intialize the position and velocity for fbo
+        // initialize the position and velocity for fbo
         fboPositionData[i4 + 0] = x;
         fboPositionData[i4 + 1] = y;
         fboPositionData[i4 + 2] = z;
@@ -417,22 +506,23 @@
         positions[i3 + 2] = 0;
         
         // calculate uv based on text's width and height
-        const xlength = x - text.geometry.boundingBox.min.x;
-        const ylength = y - text.geometry.boundingBox.min.y;
+        const xlength = x - tempTextMesh.geometry.boundingBox.min.x;
+        const ylength = y - tempTextMesh.geometry.boundingBox.min.y;
         uvs[i2 + 0] = xlength / textWidth;
         uvs[i2 + 1] = ylength / textHeight;
       }
       geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
       geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
 
+      // Full reset - recreate all textures
       fboMesh.material.uniforms.uOriginalPositionsTexture.value = new THREE.DataTexture(
-          new Float32Array(fboPositionData), // wrap it in Float32Array again to make a copy
+          new Float32Array(fboPositionData),
           fboWidth, fboHeight, THREE.RGBAFormat, THREE.FloatType
         );
       fboMesh.material.uniforms.uOriginalPositionsTexture.value.needsUpdate = true;
       
       fboMesh.material.uniforms.uPositionsTexture.value = new THREE.DataTexture(
-          new Float32Array(fboPositionData), // wrap it in Float32Array again to make a copy
+          new Float32Array(fboPositionData),
           fboWidth, fboHeight, THREE.RGBAFormat, THREE.FloatType
         );
       fboMesh.material.uniforms.uPositionsTexture.value.needsUpdate = true;
@@ -444,9 +534,101 @@
       fboMesh.material.uniforms.uVelocitiesTexture.value.needsUpdate = true;
 
       textUniforms.uPositionsTexture.value = fboMesh.material.uniforms.uPositionsTexture.value;
+      
+      // Update the global text Points object
       text.geometry = geometry;
       text.geometry.computeBoundingSphere();
       text.geometry.boundingSphere.radius = 1000;
+      text.position.set(0, 0.5, 0);
+      
+      // Clean up temporary mesh
+      tempTextMesh.geometry.dispose();
+      tempTextMesh.material.dispose();
+      
+      isUpdatingText = false;
+    }
+    
+    // Update text at runtime - smooth transition path
+    function updateTextRuntime(newText, particleCount) {
+      if (isUpdatingText) return;
+      isUpdatingText = true;
+      
+      // Calculate texture dimensions for the desired particle count
+      const dims = calculateTextureDimensions(particleCount);
+      const newFboWidth = dims.width;
+      const newFboHeight = dims.height;
+      const newCount = newFboWidth * newFboHeight;
+      
+      // If particle count changed, we need to do full initialization
+      if (newFboWidth !== fboWidth || newFboHeight !== fboHeight) {
+        isUpdatingText = false;
+        initializeTextGeometry(newText, particleCount);
+        return;
+      }
+      
+      // Update texture resolution uniform if needed
+      if (fboWidth !== newFboWidth || fboHeight !== newFboHeight) {
+        fboUniforms.uTextureResolution.value.set(newFboWidth, newFboHeight);
+      }
+      
+      // Process text input to create geometry
+      const mergedGeometry = processTextInput(newText);
+      if (!mergedGeometry) {
+        isUpdatingText = false;
+        return;
+      }
+      
+      // Create temporary text mesh for sampling
+      const tempTextMesh = new THREE.Mesh(mergedGeometry, new THREE.MeshBasicMaterial());
+      tempTextMesh.geometry.computeBoundingBox();
+      const textWidth = tempTextMesh.geometry.boundingBox.max.x - tempTextMesh.geometry.boundingBox.min.x;
+      const textHeight = tempTextMesh.geometry.boundingBox.max.y - tempTextMesh.geometry.boundingBox.min.y;
+      
+      // Center the text
+      tempTextMesh.position.x = -textWidth / 2;
+      tempTextMesh.position.y = -textHeight / 2;
+      tempTextMesh.position.z = 0;
+
+      const surfaceSampler = new MeshSurfaceSampler(tempTextMesh).build();
+      const fboPositionData = new Float32Array(COUNT * 4);
+
+      const tempPosition = new THREE.Vector3();
+      for (let i = 0; i < COUNT; i++) {
+        const i4 = i * 4;
+        
+        // sample a position from the surface of the new text
+        surfaceSampler.sample(tempPosition);
+        const [x, y, z] = tempPosition;
+
+        // Store new target positions
+        fboPositionData[i4 + 0] = x;
+        fboPositionData[i4 + 1] = y;
+        fboPositionData[i4 + 2] = z;
+        fboPositionData[i4 + 3] = 0;
+      }
+      
+      // Update only the original positions texture (target positions)
+      // Keep current positions and velocities for smooth animation
+      fboMesh.material.uniforms.uOriginalPositionsTexture.value = new THREE.DataTexture(
+          new Float32Array(fboPositionData),
+          fboWidth, fboHeight, THREE.RGBAFormat, THREE.FloatType
+        );
+      fboMesh.material.uniforms.uOriginalPositionsTexture.value.needsUpdate = true;
+      
+      // Note: We don't update text.geometry in runtime mode because it contains
+      // the particle texture coordinates. The particles will animate to new positions
+      // via the shader, but the underlying particle geometry stays the same.
+      
+      // Clean up temporary mesh
+      tempTextMesh.geometry.dispose();
+      tempTextMesh.material.dispose();
+      
+      isUpdatingText = false;
+    }
+    
+    // Legacy function for backward compatibility
+    function setTextGeometry(particleCount) {
+      initializeTextGeometry(currentText, particleCount);
     }
     
     // Function to initialize render targets with data from DataTextures
@@ -496,7 +678,7 @@
       disposeFBORenderTargets();
       
       // Regenerate geometry and textures with new count
-      setTextGeometry(newCount);
+      initializeTextGeometry(currentText, newCount);
       
       // Create new render targets with new dimensions
       const targets = createFBORenderTargets(fboWidth, fboHeight);
@@ -517,10 +699,48 @@
       isUpdatingParticleCount = false;
     }
     
+    // Function to update text
+    function updateText(newText) {
+      if (!newText || newText.trim().length === 0) return;
+      if (newText === currentText) return;
+      
+      currentText = newText;
+      
+      if (isRuntimeMode) {
+        updateTextRuntime(newText, currentParticleCount);
+      } else {
+        // Full initialization mode
+        disposeFBORenderTargets();
+        initializeTextGeometry(newText, currentParticleCount);
+        const targets = createFBORenderTargets(fboWidth, fboHeight);
+        fboPositionRenderTarget1 = targets.position1;
+        fboPositionRenderTarget2 = targets.position2;
+        fboVelocityRenderTarget1 = targets.velocity1;
+        fboVelocityRenderTarget2 = targets.velocity2;
+        initializeRenderTargets();
+      }
+    }
+    
+    // URL parameter parsing function (called before font loads to set initial text)
+    function parseURLParameters() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const textParam = urlParams.get('text');
+      if (textParam) {
+        const decodedText = decodeURIComponent(textParam);
+        currentText = decodedText;
+      }
+    }
+    
+    // Parse URL parameters immediately (before font loads)
+    parseURLParameters();
+    
     const fontLoader = new FontLoader();
     fontLoader.load("./assets/font.json", function (font) {
       fontConfig.font = font;
-      setTextGeometry(currentParticleCount);
+      
+      // Update text input if URL parameter was set (textInput will be available in event handlers)
+      
+      initializeTextGeometry(currentText, currentParticleCount);
       
       // Initialize render targets after geometry is set
       const targets = createFBORenderTargets(fboWidth, fboHeight);
@@ -690,5 +910,90 @@
         updateParticleCount(value); // Immediate update on blur
       });
     }
+    
+    // UI Event Handlers for text controls
+    const textInput = document.getElementById('textInput');
+    const runtimeModeCheckbox = document.getElementById('runtimeModeCheckbox');
+    
+    // Update text input if URL parameter was set
+    if (textInput && currentText !== "1,000,000\nPARTICLES") {
+      textInput.value = currentText;
+    }
+    
+    let textUpdateTimeout = null;
+    function debouncedUpdateText(text) {
+      if (textUpdateTimeout) {
+        clearTimeout(textUpdateTimeout);
+      }
+      textUpdateTimeout = setTimeout(() => {
+        updateText(text);
+      }, 500); // 500ms debounce for text input
+    }
+    
+    if (textInput) {
+      // Text input change handler
+      textInput.addEventListener('input', (e) => {
+        const value = e.target.value;
+        debouncedUpdateText(value);
+      });
+      
+      // Text input blur handler (immediate update on blur)
+      textInput.addEventListener('blur', (e) => {
+        const value = e.target.value;
+        if (textUpdateTimeout) {
+          clearTimeout(textUpdateTimeout);
+          textUpdateTimeout = null;
+        }
+        updateText(value);
+      });
+    }
+    
+    if (runtimeModeCheckbox) {
+      // Runtime mode checkbox handler
+      runtimeModeCheckbox.addEventListener('change', (e) => {
+        isRuntimeMode = e.target.checked;
+      });
+    }
+    
+    // Public API function
+    window.updateParticleText = function(text, options = {}) {
+      const mode = options.mode || (isRuntimeMode ? 'runtime' : 'init');
+      const particleCount = options.particleCount || currentParticleCount;
+      
+      // Update mode if specified
+      if (options.mode === 'runtime' || options.mode === 'init') {
+        isRuntimeMode = (options.mode === 'runtime');
+        if (runtimeModeCheckbox) {
+          runtimeModeCheckbox.checked = isRuntimeMode;
+        }
+      }
+      
+      // Update particle count if specified
+      if (options.particleCount && options.particleCount !== currentParticleCount) {
+        updateParticleCount(particleCount);
+      }
+      
+      // Update text
+      if (text && text !== currentText) {
+        currentText = text;
+        if (textInput) {
+          textInput.value = text;
+        }
+        
+        if (mode === 'runtime') {
+          updateTextRuntime(text, particleCount);
+        } else {
+          disposeFBORenderTargets();
+          initializeTextGeometry(text, particleCount);
+          const targets = createFBORenderTargets(fboWidth, fboHeight);
+          fboPositionRenderTarget1 = targets.position1;
+          fboPositionRenderTarget2 = targets.position2;
+          fboVelocityRenderTarget1 = targets.velocity1;
+          fboVelocityRenderTarget2 = targets.velocity2;
+          initializeRenderTargets();
+        }
+      }
+    };
+    
   </script>
 </html>
