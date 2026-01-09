@@ -1,0 +1,259 @@
+/* GPGPU Particle System - Styles */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  position: relative;
+  font-family: 'Times New Roman', Times, serif;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  background-color: #021119;
+  color: #d7d7d7;
+  overflow: hidden;
+}
+
+canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* Title and source links */
+.title {
+  position: absolute;
+  width: 100%;
+  top: 5%;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 10px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.title p {
+  margin: 0;
+  opacity: 0.5;
+}
+
+.source {
+  margin-top: 16px;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  pointer-events: auto;
+}
+
+.source * {
+  margin: 0 6px 0;
+}
+
+.source,
+.source a {
+  display: flex;
+  align-items: center;
+}
+
+.source a {
+  opacity: 0.6;
+  color: #d7d7d7;
+  border-bottom: 1px dotted #d7d7d7;
+  text-decoration: none;
+}
+
+.source a:hover {
+  opacity: 1;
+}
+
+/* Interaction guide */
+.guide {
+  position: absolute;
+  bottom: 10%;
+  left: 0;
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  font-size: 14px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.mouse {
+  display: flex;
+}
+
+.gestures {
+  display: none;
+}
+
+.mouse,
+.gestures {
+  align-items: center;
+}
+
+.mouse div,
+.gestures div {
+  display: flex;
+  margin: 0 10px;
+  align-items: center;
+}
+
+.mouse span,
+.gestures span {
+  margin-left: 8px;
+  opacity: 0.4;
+}
+
+.mouse svg,
+.gestures svg {
+  opacity: 0.3;
+  width: 20px;
+  height: auto;
+}
+
+.gestures svg {
+  opacity: 0.4;
+  margin-bottom: 4px;
+}
+
+/* Controls panel */
+.controls {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  background-color: rgba(2, 17, 25, 0.8);
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(215, 215, 215, 0.2);
+  z-index: 10;
+  min-width: 200px;
+  backdrop-filter: blur(10px);
+}
+
+.controls h3 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: normal;
+  opacity: 0.8;
+}
+
+.controls-group {
+  margin-bottom: 16px;
+}
+
+.controls-group:last-child {
+  margin-bottom: 0;
+}
+
+.controls-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.controls-label span {
+  opacity: 0.6;
+}
+
+.controls-slider {
+  width: 100%;
+  margin-bottom: 8px;
+  accent-color: #4a9eff;
+}
+
+.controls-input {
+  width: 100%;
+  background-color: rgba(215, 215, 215, 0.1);
+  border: 1px solid rgba(215, 215, 215, 0.3);
+  color: #d7d7d7;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: 'Times New Roman', Times, serif;
+}
+
+.controls-input:focus {
+  outline: none;
+  border-color: rgba(215, 215, 215, 0.6);
+}
+
+.controls-textarea {
+  width: 100%;
+  background-color: rgba(215, 215, 215, 0.1);
+  border: 1px solid rgba(215, 215, 215, 0.3);
+  color: #d7d7d7;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: 'Times New Roman', Times, serif;
+  resize: vertical;
+  min-height: 60px;
+}
+
+.controls-textarea:focus {
+  outline: none;
+  border-color: rgba(215, 215, 215, 0.6);
+}
+
+.controls-checkbox {
+  display: flex;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.controls-checkbox input[type="checkbox"] {
+  margin-right: 8px;
+  accent-color: #4a9eff;
+}
+
+.controls-checkbox label {
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+.controls-max-display {
+  font-size: 10px;
+  opacity: 0.5;
+  margin-bottom: 4px;
+}
+
+/* Mobile responsive */
+@media only screen and (hover: none) {
+  .guide {
+    bottom: 15%;
+  }
+  
+  .mouse {
+    display: none;
+  }
+  
+  .gestures {
+    display: flex;
+  }
+  
+  .controls {
+    top: 10px;
+    right: 10px;
+    padding: 12px;
+    min-width: 180px;
+  }
+}
+
+@media only screen and (max-width: 500px) {
+  .controls {
+    left: 10px;
+    right: 10px;
+    min-width: unset;
+  }
+}
+
