@@ -39,6 +39,7 @@
     .controls-textarea:focus { outline: none; border-color: rgba(215, 215, 215, 0.6); }
     .controls-checkbox { display: flex; align-items: center; margin-top: 8px; font-size: 12px; }
     .controls-checkbox input[type="checkbox"] { margin-right: 8px; }
+    .controls-max-display { font-size: 10px; opacity: 0.5; margin-bottom: 4px; }
     @media only screen and (hover: none) {
       .guide { bottom: 15% }
       .mouse { display: none; }
@@ -108,8 +109,9 @@
           <span>Particle Count</span>
           <span id="particleCountDisplay">1,000,000</span>
         </div>
-        <input type="range" id="particleCountSlider" class="controls-slider" min="1000" max="1000000" step="1000" value="1000000">
-        <input type="number" id="particleCountInput" class="controls-input" min="1000" max="1000000" step="1000" value="1000000">
+        <div class="controls-max-display" id="maxParticleCountDisplay">Max: Detecting...</div>
+        <input type="range" id="particleCountSlider" class="controls-slider" min="1000" max="16777216" step="1000" value="1000000">
+        <input type="number" id="particleCountInput" class="controls-input" min="1000" max="16777216" step="1000" value="1000000">
       </div>
     </div>
   </body>
@@ -219,6 +221,14 @@
     let fboHeight = 1000;
     let COUNT = fboWidth * fboHeight;
     
+    // Maximum texture size and particle count
+    // Practical maximum: 10,000,000 particles (tested limit for performance)
+    // Texture size needed: sqrt(10000000) ≈ 3162.27, so we use 3163×3163 = 9,998,569
+    const PRACTICAL_MAX_PARTICLES = 10000000;
+    const PRACTICAL_MAX_TEXTURE_SIZE = Math.ceil(Math.sqrt(PRACTICAL_MAX_PARTICLES)); // 3163
+    let maxTextureSize = PRACTICAL_MAX_TEXTURE_SIZE;
+    let maxParticleCount = PRACTICAL_MAX_PARTICLES;
+    
     // Current particle count (user-controlled)
     let currentParticleCount = 1000000;
     
@@ -320,8 +330,9 @@
     // Function to calculate optimal texture dimensions for a given particle count
     function calculateTextureDimensions(count) {
       // Calculate square root and round up to ensure we have enough space
-      const side = Math.ceil(Math.sqrt(count));
-      // Round to nearest reasonable GPU-friendly size (not necessarily power of 2, but close)
+      let side = Math.ceil(Math.sqrt(count));
+      // Cap at practical maximum texture size
+      side = Math.min(side, maxTextureSize);
       return {
         width: side,
         height: side
@@ -514,6 +525,22 @@
       geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
       geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
 
+      // Dispose old textures before creating new ones
+      if (fboMesh.material.uniforms.uOriginalPositionsTexture.value) {
+        fboMesh.material.uniforms.uOriginalPositionsTexture.value.dispose();
+      }
+      if (fboMesh.material.uniforms.uPositionsTexture.value) {
+        fboMesh.material.uniforms.uPositionsTexture.value.dispose();
+      }
+      if (fboMesh.material.uniforms.uVelocitiesTexture.value) {
+        fboMesh.material.uniforms.uVelocitiesTexture.value.dispose();
+      }
+      
+      // Dispose old geometry before replacing
+      if (text.geometry) {
+        text.geometry.dispose();
+      }
+
       // Full reset - recreate all textures
       fboMesh.material.uniforms.uOriginalPositionsTexture.value = new THREE.DataTexture(
           new Float32Array(fboPositionData),
@@ -607,6 +634,11 @@
         fboPositionData[i4 + 3] = 0;
       }
       
+      // Dispose old original positions texture before creating new one
+      if (fboMesh.material.uniforms.uOriginalPositionsTexture.value) {
+        fboMesh.material.uniforms.uOriginalPositionsTexture.value.dispose();
+      }
+      
       // Update only the original positions texture (target positions)
       // Keep current positions and velocities for smooth animation
       fboMesh.material.uniforms.uOriginalPositionsTexture.value = new THREE.DataTexture(
@@ -666,8 +698,8 @@
     function updateParticleCount(newCount) {
       if (isUpdatingParticleCount) return;
       
-      // Validate count
-      newCount = Math.max(1000, Math.min(1000000, Math.floor(newCount)));
+      // Validate count - use dynamic maximum based on texture size
+      newCount = Math.max(1000, Math.min(maxParticleCount, Math.floor(newCount)));
       
       if (newCount === currentParticleCount) return;
       
@@ -766,6 +798,26 @@
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setClearColor(0x021119);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    
+    // Query maximum texture size from WebGL (for info only)
+    const gl = renderer.getContext();
+    let gpuMaxTextureSize = 4096; // Default fallback
+    if (gl) {
+      gpuMaxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+      console.log(`GPU maximum texture size: ${gpuMaxTextureSize}x${gpuMaxTextureSize}`);
+      console.log(`GPU theoretical max particles: ${(gpuMaxTextureSize * gpuMaxTextureSize).toLocaleString()}`);
+      console.log(`Practical maximum (performance-tested): ${maxParticleCount.toLocaleString()} particles (${maxTextureSize}×${maxTextureSize} texture)`);
+      
+      // Verify GPU can handle our practical maximum
+      if (gpuMaxTextureSize < maxTextureSize) {
+        // GPU can't handle our practical max, use GPU limit instead
+        maxTextureSize = gpuMaxTextureSize;
+        maxParticleCount = maxTextureSize * maxTextureSize;
+        console.warn(`GPU limit is lower than practical max. Using GPU limit: ${maxParticleCount.toLocaleString()} particles`);
+      }
+    }
+    
+    // UI max values will be updated when event handlers are set up (see below)
     const orbitControls = new OrbitControls(camera, renderer.domElement);
     orbitControls.enableDamping = true;
     orbitControls.touches = {
@@ -861,9 +913,22 @@
     }
     
     // UI Event Handlers for particle count controls
+    // Update max values when DOM is ready
     const particleCountSlider = document.getElementById('particleCountSlider');
     const particleCountInput = document.getElementById('particleCountInput');
     const particleCountDisplay = document.getElementById('particleCountDisplay');
+    const maxParticleCountDisplay = document.getElementById('maxParticleCountDisplay');
+    
+    // Update max values if elements exist
+    if (particleCountSlider) {
+      particleCountSlider.max = maxParticleCount;
+    }
+    if (particleCountInput) {
+      particleCountInput.max = maxParticleCount;
+    }
+    if (maxParticleCountDisplay) {
+      maxParticleCountDisplay.textContent = `Max: ${maxParticleCount.toLocaleString()} (${maxTextureSize}×${maxTextureSize})`;
+    }
     
     let updateTimeout = null;
     function debouncedUpdateParticleCount(count) {
@@ -892,7 +957,7 @@
       particleCountInput.addEventListener('input', (e) => {
         let value = parseInt(e.target.value);
         if (isNaN(value)) value = currentParticleCount;
-        value = Math.max(1000, Math.min(1000000, value));
+        value = Math.max(1000, Math.min(maxParticleCount, value));
         particleCountSlider.value = value;
         particleCountInput.value = value;
         particleCountDisplay.textContent = formatNumber(value);
@@ -903,7 +968,7 @@
       particleCountInput.addEventListener('blur', (e) => {
         let value = parseInt(e.target.value);
         if (isNaN(value)) value = currentParticleCount;
-        value = Math.max(1000, Math.min(1000000, value));
+        value = Math.max(1000, Math.min(maxParticleCount, value));
         particleCountSlider.value = value;
         particleCountInput.value = value;
         particleCountDisplay.textContent = formatNumber(value);
@@ -970,7 +1035,9 @@
       
       // Update particle count if specified
       if (options.particleCount && options.particleCount !== currentParticleCount) {
-        updateParticleCount(particleCount);
+        // Validate against max
+        const validCount = Math.max(1000, Math.min(maxParticleCount, options.particleCount));
+        updateParticleCount(validCount);
       }
       
       // Update text
