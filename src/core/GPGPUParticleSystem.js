@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { RenderTargetPool } from './RenderTargetPool.js';
 import { ShaderManager } from './ShaderManager.js';
 import { LODController } from './LODController.js';
+import { OP_CODES, PARTICLE_STATE } from './OperationCodes.js';
 import { 
   PARTICLES, 
   PHYSICS, 
@@ -10,10 +11,18 @@ import {
   calculateTextureDimensions 
 } from './constants.js';
 import { createPositionData, createVelocityData, createParticleAttributes } from '../utils/BufferUtils.js';
+import * as TextureEncoder from '../utils/TextureEncoder.js';
 
 /**
- * Main GPGPU Particle System class
- * Manages particle simulation and rendering using GPU compute
+ * Self-Directing GPGPU Particle Engine
+ * 
+ * The GPU runs autonomously - shaders read operation codes from textures
+ * and execute the appropriate math. CPU only interrupts to modify
+ * operation codes or particle states in the textures.
+ * 
+ * Texture Format:
+ * - Position Texture: RGB = position, A = operation code
+ * - Velocity Texture: RGB = velocity, A = particle state
  */
 export class GPGPUParticleSystem {
   /**
@@ -22,6 +31,7 @@ export class GPGPUParticleSystem {
    * @param {number} options.count - Initial particle count
    * @param {Object} options.lod - LOD configuration
    * @param {THREE.Texture} options.colorTexture - Texture for particle coloring
+   * @param {boolean} options.usePipeline - Use self-directing pipeline shaders (default: true)
    */
   constructor(renderer, options = {}) {
     this.renderer = renderer;
@@ -29,12 +39,15 @@ export class GPGPUParticleSystem {
       count: PARTICLES.DEFAULT_COUNT,
       lod: { enabled: false },
       colorTexture: null,
+      usePipeline: true,  // Use self-directing pipeline by default
       ...options
     };
 
     // State management
     this.state = ParticleSystemState.IDLE;
     this._currentCount = this.options.count;
+    this._interrupted = false;
+    this._frameCount = 0;
     
     // Calculate initial texture dimensions
     const dims = calculateTextureDimensions(this._currentCount);
@@ -61,6 +74,14 @@ export class GPGPUParticleSystem {
     this._originalPositionsTexture = null;
     this._positionsTexture = null;
     this._velocitiesTexture = null;
+
+    // CPU-side texture data cache for modifications
+    this._positionDataCache = null;
+    this._velocityDataCache = null;
+
+    // Operation queue texture
+    this._operationQueueTexture = null;
+    this._operationQueue = [];  // Current queue of operations
 
     // Time tracking
     this._clock = new THREE.Clock();
@@ -102,8 +123,15 @@ export class GPGPUParticleSystem {
    * @private
    */
   _initMaterials() {
+    // Legacy separate shaders
     this._positionMaterial = this.shaderManager.createPositionMaterial();
     this._velocityMaterial = this.shaderManager.createVelocityMaterial();
+    
+    // Self-directing pipeline shaders
+    this._pipelineMaterial = this.shaderManager.createPipelineMaterial();
+    this._velocityPipelineMaterial = this.shaderManager.createVelocityPipelineMaterial();
+    
+    // Particle rendering
     this._particleMaterial = this.shaderManager.createParticleMaterial(this.options.colorTexture);
   }
 
@@ -201,7 +229,7 @@ export class GPGPUParticleSystem {
   _updateMaterialUniforms() {
     const resolution = new THREE.Vector2(this._textureWidth, this._textureHeight);
 
-    // Position material
+    // Legacy position material
     this._positionMaterial.uniforms.uOriginalPositionsTexture.value = this._originalPositionsTexture;
     this._positionMaterial.uniforms.uPositionsTexture.value = this._positionsTexture;
     this._positionMaterial.uniforms.uVelocitiesTexture.value = this._velocitiesTexture;
@@ -209,11 +237,29 @@ export class GPGPUParticleSystem {
     this._positionMaterial.uniforms.uNoiseFrequency.value = PHYSICS.NOISE_FREQUENCY;
     this._positionMaterial.uniforms.uNoiseAmplitude.value = PHYSICS.NOISE_AMPLITUDE;
 
-    // Velocity material
+    // Legacy velocity material
     this._velocityMaterial.uniforms.uOriginalPositionsTexture.value = this._originalPositionsTexture;
     this._velocityMaterial.uniforms.uPositionsTexture.value = this._positionsTexture;
     this._velocityMaterial.uniforms.uVelocitiesTexture.value = this._velocitiesTexture;
     this._velocityMaterial.uniforms.uTextureResolution.value = resolution;
+
+    // Pipeline position material
+    this._pipelineMaterial.uniforms.uOriginalPositionsTexture.value = this._originalPositionsTexture;
+    this._pipelineMaterial.uniforms.uPositionsTexture.value = this._positionsTexture;
+    this._pipelineMaterial.uniforms.uVelocitiesTexture.value = this._velocitiesTexture;
+    this._pipelineMaterial.uniforms.uTextureResolution.value = resolution;
+    this._pipelineMaterial.uniforms.uNoiseFrequency.value = PHYSICS.NOISE_FREQUENCY;
+    this._pipelineMaterial.uniforms.uNoiseAmplitude.value = PHYSICS.NOISE_AMPLITUDE;
+    this._pipelineMaterial.uniforms.uPointerRadius.value = PHYSICS.POINTER_INFLUENCE_RADIUS;
+
+    // Pipeline velocity material
+    this._velocityPipelineMaterial.uniforms.uOriginalPositionsTexture.value = this._originalPositionsTexture;
+    this._velocityPipelineMaterial.uniforms.uPositionsTexture.value = this._positionsTexture;
+    this._velocityPipelineMaterial.uniforms.uVelocitiesTexture.value = this._velocitiesTexture;
+    this._velocityPipelineMaterial.uniforms.uTextureResolution.value = resolution;
+    this._velocityPipelineMaterial.uniforms.uNoiseFrequency.value = PHYSICS.NOISE_FREQUENCY;
+    this._velocityPipelineMaterial.uniforms.uNoiseAmplitude.value = PHYSICS.NOISE_AMPLITUDE;
+    this._velocityPipelineMaterial.uniforms.uPointerRadius.value = PHYSICS.POINTER_INFLUENCE_RADIUS;
   }
 
   /**
@@ -251,11 +297,20 @@ export class GPGPUParticleSystem {
 
     this.renderer.setRenderTarget(null);
 
-    // Update material uniforms to use render target textures
-    this._positionMaterial.uniforms.uPositionsTexture.value = this.renderTargetPool.getReadTarget('position').texture;
-    this._positionMaterial.uniforms.uVelocitiesTexture.value = this.renderTargetPool.getReadTarget('velocity').texture;
-    this._velocityMaterial.uniforms.uPositionsTexture.value = this.renderTargetPool.getReadTarget('position').texture;
-    this._velocityMaterial.uniforms.uVelocitiesTexture.value = this.renderTargetPool.getReadTarget('velocity').texture;
+    const posReadTexture = this.renderTargetPool.getReadTarget('position').texture;
+    const velReadTexture = this.renderTargetPool.getReadTarget('velocity').texture;
+
+    // Update legacy material uniforms to use render target textures
+    this._positionMaterial.uniforms.uPositionsTexture.value = posReadTexture;
+    this._positionMaterial.uniforms.uVelocitiesTexture.value = velReadTexture;
+    this._velocityMaterial.uniforms.uPositionsTexture.value = posReadTexture;
+    this._velocityMaterial.uniforms.uVelocitiesTexture.value = velReadTexture;
+
+    // Update pipeline material uniforms
+    this._pipelineMaterial.uniforms.uPositionsTexture.value = posReadTexture;
+    this._pipelineMaterial.uniforms.uVelocitiesTexture.value = velReadTexture;
+    this._velocityPipelineMaterial.uniforms.uPositionsTexture.value = posReadTexture;
+    this._velocityPipelineMaterial.uniforms.uVelocitiesTexture.value = velReadTexture;
   }
 
   /**
@@ -354,6 +409,8 @@ export class GPGPUParticleSystem {
     // Update uniforms
     this._positionMaterial.uniforms.uOriginalPositionsTexture.value = this._originalPositionsTexture;
     this._velocityMaterial.uniforms.uOriginalPositionsTexture.value = this._originalPositionsTexture;
+    this._pipelineMaterial.uniforms.uOriginalPositionsTexture.value = this._originalPositionsTexture;
+    this._velocityPipelineMaterial.uniforms.uOriginalPositionsTexture.value = this._originalPositionsTexture;
 
     // Update sampler reference
     this._sampler = newSampler;
@@ -404,17 +461,34 @@ export class GPGPUParticleSystem {
    * @param {THREE.Vector3} startPosition - Pointer start position
    */
   setPointer(position, startPosition) {
+    // Legacy materials
     this._positionMaterial.uniforms.uPointer.value.copy(position);
     this._positionMaterial.uniforms.uPointerStart.value.copy(startPosition);
     this._velocityMaterial.uniforms.uPointer.value.copy(position);
     this._velocityMaterial.uniforms.uPointerStart.value.copy(startPosition);
+    
+    // Pipeline materials
+    this._pipelineMaterial.uniforms.uPointer.value.copy(position);
+    this._pipelineMaterial.uniforms.uPointerStart.value.copy(startPosition);
+    this._velocityPipelineMaterial.uniforms.uPointer.value.copy(position);
+    this._velocityPipelineMaterial.uniforms.uPointerStart.value.copy(startPosition);
   }
 
   /**
    * Update the particle system (call every frame)
+   * 
+   * In pipeline mode, the shader reads operation codes from the texture
+   * and executes the appropriate math autonomously. The CPU only needs
+   * to trigger the render - the shader decides what calculations to run.
+   * 
    * @param {number} deltaTime - Time since last frame (optional, uses internal clock if not provided)
    */
   update(deltaTime) {
+    // Check for CPU interrupt
+    if (this._interrupted) {
+      return;
+    }
+
     if (!this.renderTargetPool.has('position') || !this.renderTargetPool.has('velocity')) {
       return;
     }
@@ -422,16 +496,24 @@ export class GPGPUParticleSystem {
     // Use provided deltaTime or get from clock
     const dt = deltaTime ?? this._clock.getDelta();
     this._time += dt;
+    this._frameCount++;
 
     // Record frame for LOD
     this.lodController.recordFrame(dt);
 
-    // Update time uniforms
-    this._positionMaterial.uniforms.uTime.value = this._time;
-    this._positionMaterial.uniforms.uDeltaTime.value = dt;
+    // Choose which materials to use
+    const usePipeline = this.options.usePipeline;
+    const posMaterial = usePipeline ? this._pipelineMaterial : this._positionMaterial;
+    const velMaterial = usePipeline ? this._velocityPipelineMaterial : this._velocityMaterial;
 
-    // Velocity pass
-    this._fboMesh.material = this._velocityMaterial;
+    // Update time uniforms
+    posMaterial.uniforms.uTime.value = this._time;
+    posMaterial.uniforms.uDeltaTime.value = dt;
+    velMaterial.uniforms.uTime.value = this._time;
+    velMaterial.uniforms.uDeltaTime.value = dt;
+
+    // Velocity pass - shader reads operation code from texture and executes appropriate math
+    this._fboMesh.material = velMaterial;
     const velWriteTarget = this.renderTargetPool.getWriteTarget('velocity');
     this.renderer.setRenderTarget(velWriteTarget);
     this.renderer.clear();
@@ -440,11 +522,14 @@ export class GPGPUParticleSystem {
     
     // Update velocity texture reference
     const velReadTarget = this.renderTargetPool.getReadTarget('velocity');
+    posMaterial.uniforms.uVelocitiesTexture.value = velReadTarget.texture;
+    velMaterial.uniforms.uVelocitiesTexture.value = velReadTarget.texture;
+    // Also update legacy materials for compatibility
     this._positionMaterial.uniforms.uVelocitiesTexture.value = velReadTarget.texture;
     this._velocityMaterial.uniforms.uVelocitiesTexture.value = velReadTarget.texture;
 
-    // Position pass
-    this._fboMesh.material = this._positionMaterial;
+    // Position pass - shader reads operation code from texture and executes appropriate math
+    this._fboMesh.material = posMaterial;
     const posWriteTarget = this.renderTargetPool.getWriteTarget('position');
     this.renderer.setRenderTarget(posWriteTarget);
     this.renderer.clear();
@@ -453,6 +538,9 @@ export class GPGPUParticleSystem {
 
     // Update position texture reference
     const posReadTarget = this.renderTargetPool.getReadTarget('position');
+    posMaterial.uniforms.uPositionsTexture.value = posReadTarget.texture;
+    velMaterial.uniforms.uPositionsTexture.value = posReadTarget.texture;
+    // Also update legacy materials for compatibility
     this._positionMaterial.uniforms.uPositionsTexture.value = posReadTarget.texture;
     this._velocityMaterial.uniforms.uPositionsTexture.value = posReadTarget.texture;
 
@@ -549,6 +637,286 @@ export class GPGPUParticleSystem {
       if (frequency !== undefined) this._positionMaterial.uniforms.uNoiseFrequency.value = frequency;
       if (amplitude !== undefined) this._positionMaterial.uniforms.uNoiseAmplitude.value = amplitude;
     }
+    if (this._pipelineMaterial?.uniforms) {
+      if (frequency !== undefined) this._pipelineMaterial.uniforms.uNoiseFrequency.value = frequency;
+      if (amplitude !== undefined) this._pipelineMaterial.uniforms.uNoiseAmplitude.value = amplitude;
+    }
+    if (this._velocityPipelineMaterial?.uniforms) {
+      if (frequency !== undefined) this._velocityPipelineMaterial.uniforms.uNoiseFrequency.value = frequency;
+      if (amplitude !== undefined) this._velocityPipelineMaterial.uniforms.uNoiseAmplitude.value = amplitude;
+    }
+  }
+
+  // ============================================================
+  // SELF-DIRECTING PIPELINE API
+  // ============================================================
+
+  /**
+   * Set global operation for all particles
+   * This overrides per-particle operation codes stored in the texture.
+   * Set to 0 to use per-particle operations from texture.
+   * @param {number} opCode - Operation code from OP_CODES
+   */
+  setGlobalOperation(opCode) {
+    this.shaderManager.setGlobalOperation(opCode);
+  }
+
+  /**
+   * Set operation parameters for the pipeline shaders
+   * @param {Object} params - Operation parameters
+   * @param {number[]} [params.gravity] - Gravity vector [x, y, z]
+   * @param {number[]} [params.windDirection] - Wind direction [x, y, z]
+   * @param {number} [params.windStrength] - Wind strength
+   * @param {number} [params.noiseFrequency] - Noise frequency
+   * @param {number} [params.noiseAmplitude] - Noise amplitude
+   * @param {number[]} [params.attractorPosition] - Attractor position [x, y, z]
+   * @param {number} [params.attractorStrength] - Attractor strength (negative = repel)
+   * @param {number} [params.attractorRadius] - Attractor influence radius
+   * @param {number} [params.returnHomeStrength] - Spring back strength
+   * @param {number} [params.damping] - Velocity damping (0-1)
+   * @param {number} [params.maxSpeed] - Maximum particle speed
+   */
+  setOperationParams(params) {
+    this.shaderManager.setOperationParams(params);
+  }
+
+  // ============================================================
+  // INTERRUPT SYSTEM
+  // ============================================================
+
+  /**
+   * Interrupt the GPU loop for CPU modifications
+   * While interrupted, update() will return immediately.
+   */
+  interrupt() {
+    this._interrupted = true;
+  }
+
+  /**
+   * Resume the GPU loop after CPU modifications
+   */
+  resume() {
+    this._interrupted = false;
+  }
+
+  /**
+   * Check if the system is currently interrupted
+   * @returns {boolean}
+   */
+  isInterrupted() {
+    return this._interrupted;
+  }
+
+  // ============================================================
+  // TEXTURE MODIFICATION API
+  // ============================================================
+
+  /**
+   * Read current particle positions from GPU texture
+   * @returns {Promise<Float32Array>} RGBA position data
+   */
+  async readParticlePositions() {
+    const posTarget = this.renderTargetPool.getReadTarget('position');
+    return TextureEncoder.readRenderTargetPixels(this.renderer, posTarget);
+  }
+
+  /**
+   * Read current particle velocities from GPU texture
+   * @returns {Promise<Float32Array>} RGBA velocity data
+   */
+  async readParticleVelocities() {
+    const velTarget = this.renderTargetPool.getReadTarget('velocity');
+    return TextureEncoder.readRenderTargetPixels(this.renderer, velTarget);
+  }
+
+  /**
+   * Set operation code for specific particles
+   * Requires interrupt() to be called first.
+   * @param {number[]} indices - Particle indices to modify
+   * @param {number} opCode - Operation code from OP_CODES
+   */
+  async setParticleOperations(indices, opCode) {
+    if (!this._interrupted) {
+      console.warn('GPGPUParticleSystem: Call interrupt() before modifying particle operations');
+      return;
+    }
+
+    // Read current position data
+    const posData = await this.readParticlePositions();
+    
+    // Modify operation codes
+    TextureEncoder.setOperationCodesAtIndices(posData, indices, opCode);
+    
+    // Write back to texture
+    await this._writePositionData(posData);
+  }
+
+  /**
+   * Set operation code for all particles via texture modification
+   * Requires interrupt() to be called first.
+   * @param {number} opCode - Operation code from OP_CODES
+   */
+  async setAllParticleOperations(opCode) {
+    if (!this._interrupted) {
+      console.warn('GPGPUParticleSystem: Call interrupt() before modifying particle operations');
+      return;
+    }
+
+    // Read current position data
+    const posData = await this.readParticlePositions();
+    
+    // Set all operation codes
+    TextureEncoder.setAllOperationCodes(posData, opCode);
+    
+    // Write back to texture
+    await this._writePositionData(posData);
+  }
+
+  // ============================================================
+  // PARTICLE LIFECYCLE
+  // ============================================================
+
+  /**
+   * Spawn particles at specific indices
+   * Sets their state to SPAWNING so the shader will initialize them.
+   * @param {number[]} indices - Particle indices to spawn
+   */
+  async spawnParticles(indices) {
+    if (!this._interrupted) {
+      console.warn('GPGPUParticleSystem: Call interrupt() before spawning particles');
+      return;
+    }
+
+    const velData = await this.readParticleVelocities();
+    TextureEncoder.spawnParticles(velData, indices);
+    await this._writeVelocityData(velData);
+  }
+
+  /**
+   * Kill particles at specific indices
+   * Sets their state to DEAD so the shader will skip them.
+   * @param {number[]} indices - Particle indices to kill
+   */
+  async killParticles(indices) {
+    if (!this._interrupted) {
+      console.warn('GPGPUParticleSystem: Call interrupt() before killing particles');
+      return;
+    }
+
+    const velData = await this.readParticleVelocities();
+    TextureEncoder.killParticles(velData, indices);
+    await this._writeVelocityData(velData);
+  }
+
+  /**
+   * Get indices of all dead particles
+   * @returns {Promise<number[]>} Array of dead particle indices
+   */
+  async getDeadParticles() {
+    const velData = await this.readParticleVelocities();
+    return TextureEncoder.getDeadParticles(velData);
+  }
+
+  /**
+   * Get indices of all active particles
+   * @returns {Promise<number[]>} Array of active particle indices
+   */
+  async getActiveParticles() {
+    const velData = await this.readParticleVelocities();
+    return TextureEncoder.getActiveParticles(velData);
+  }
+
+  // ============================================================
+  // OPERATION QUEUE
+  // ============================================================
+
+  /**
+   * Queue operations for sequential execution
+   * Particles will cycle through these operations in order.
+   * @param {number[]} opCodes - Array of operation codes (max 3)
+   */
+  queueOperations(opCodes) {
+    this._operationQueue = opCodes.slice(0, 3); // Max 3 operations in queue
+    
+    // Create or update operation queue texture
+    if (!this._operationQueueTexture) {
+      this._operationQueueTexture = TextureEncoder.createOperationQueueTexture(
+        this._actualCount,
+        this._textureWidth,
+        this._textureHeight,
+        this._operationQueue
+      );
+    } else {
+      // Update existing texture with new queue
+      const data = new Float32Array(this._actualCount * 4);
+      const op1 = this._operationQueue[0] ?? OP_CODES.ALL;
+      const op2 = this._operationQueue[1] ?? OP_CODES.NONE;
+      const op3 = this._operationQueue[2] ?? OP_CODES.NONE;
+      
+      for (let i = 0; i < this._actualCount; i++) {
+        const i4 = i * 4;
+        data[i4 + 0] = 0;    // Current index
+        data[i4 + 1] = op1;  // Operation 1
+        data[i4 + 2] = op2;  // Operation 2
+        data[i4 + 3] = op3;  // Operation 3
+      }
+      TextureEncoder.updateDataTexture(this._operationQueueTexture, data);
+    }
+    
+    // Update pipeline uniforms
+    if (this._pipelineMaterial?.uniforms) {
+      this._pipelineMaterial.uniforms.uOperationQueueTexture = { value: this._operationQueueTexture };
+      // Enable queue mode by setting uUseQueue if it exists
+    }
+  }
+
+  /**
+   * Clear the operation queue
+   */
+  clearOperationQueue() {
+    this._operationQueue = [];
+    if (this._operationQueueTexture) {
+      this._operationQueueTexture.dispose();
+      this._operationQueueTexture = null;
+    }
+  }
+
+  /**
+   * Get the current operation queue
+   * @returns {number[]} Array of operation codes
+   */
+  getOperationQueue() {
+    return [...this._operationQueue];
+  }
+
+  /**
+   * Write position data back to GPU texture
+   * @private
+   * @param {Float32Array} data - RGBA position data
+   */
+  async _writePositionData(data) {
+    // Update the data texture
+    if (this._positionsTexture) {
+      TextureEncoder.updateDataTexture(this._positionsTexture, data);
+    }
+    
+    // Re-initialize render targets with new data
+    this._initializeRenderTargetContent();
+  }
+
+  /**
+   * Write velocity data back to GPU texture
+   * @private
+   * @param {Float32Array} data - RGBA velocity data
+   */
+  async _writeVelocityData(data) {
+    // Update the data texture
+    if (this._velocitiesTexture) {
+      TextureEncoder.updateDataTexture(this._velocitiesTexture, data);
+    }
+    
+    // Re-initialize render targets with new data
+    this._initializeRenderTargetContent();
   }
 
   /**
@@ -591,6 +959,11 @@ export class GPGPUParticleSystem {
     this.renderTargetPool.disposeAll();
     this.shaderManager.dispose();
     this._disposeDataTextures();
+
+    if (this._operationQueueTexture) {
+      this._operationQueueTexture.dispose();
+      this._operationQueueTexture = null;
+    }
 
     if (this.particles?.geometry) {
       this.particles.geometry.dispose();
