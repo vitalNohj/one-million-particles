@@ -13,9 +13,11 @@
 precision highp float;
 
 // Texture samplers
-uniform sampler2D uPositionsTexture;      // Current positions (RGB) + operation code (A)
-uniform sampler2D uVelocitiesTexture;     // Current velocities (RGB) + particle state (A)
+uniform sampler2D uPositionsTexture;      // Current positions (RGB)
+uniform sampler2D uVelocitiesTexture;      // Current velocities (RGB)
 uniform sampler2D uOriginalPositionsTexture; // Original/target positions
+uniform sampler2D uOperationCodesTexture;  // Operation codes per particle (R = op code)
+uniform sampler2D uParticleStatesTexture;  // Particle states per particle (R = state)
 uniform sampler2D uOperationQueueTexture; // Optional: operation queue per particle
 
 // Resolution and time
@@ -47,6 +49,14 @@ uniform float uVortexRadius;        // Vortex radius
 uniform float uDamping;             // Velocity damping (0-1)
 uniform float uMaxSpeed;            // Maximum particle speed
 
+// Distance kill parameters
+uniform float uMaxDistanceFromCenter;  // Max distance before particle is killed
+uniform float uDistanceKillEnabled;    // 1.0 = enabled, 0.0 = disabled
+
+// Center pull parameters
+uniform vec3 uCenterPullTarget;        // Target point for center pull (usually origin)
+uniform float uCenterPullStrength;     // Strength of center pull force
+
 // Include noise functions
 #include "../includes/noise.glsl"
 
@@ -63,10 +73,14 @@ void main() {
     vec4 velData = texture2D(uVelocitiesTexture, uv);
     vec3 originalPos = texture2D(uOriginalPositionsTexture, uv).rgb;
     
+    // Read from dedicated metadata textures
+    vec4 opCodeData = texture2D(uOperationCodesTexture, uv);
+    vec4 stateData = texture2D(uParticleStatesTexture, uv);
+    
     vec3 position = posData.rgb;
     vec3 velocity = velData.rgb;
-    float opCode = posData.a;           // Operation code stored in position alpha
-    float particleState = velData.a;    // Particle lifecycle state in velocity alpha
+    float opCode = opCodeData.r;        // Operation code from dedicated texture
+    float particleState = stateData.r;   // Particle state from dedicated texture
     
     // Use global operation override if set
     if (uGlobalOperation > 0.0) {
@@ -130,6 +144,10 @@ void main() {
         velocity = opVortex(position, velocity, uVortexCenter, uVortexAxis, 
                            uVortexStrength, uVortexRadius, uDeltaTime);
     }
+    else if (opCode == OP_CENTER_PULL) {
+        // Center pull - gently pull toward origin
+        velocity = opCenterPull(position, velocity, uCenterPullTarget, uCenterPullStrength, uDeltaTime);
+    }
     else if (opCode == OP_ALL) {
         // Combined operations (default behavior - similar to original shaders)
         
@@ -182,14 +200,31 @@ void main() {
     // Calculate displacement from original (used for coloring/effects)
     float displacement = calcDisplacement(position, originalPos);
     
+    // Calculate distance from center (origin) for kill check
+    float distFromCenter = calcDistanceFromCenter(position);
+    
     // Determine next operation (default: same operation)
     // This can be modified to cycle through an operation queue
     float nextOp = opCode;
     
     // ========================================
-    // 6. WRITE RESULTS BACK TO TEXTURE
+    // 6. DISTANCE-BASED KILL CHECK
     // ========================================
     
-    // Output: position (RGB) + next operation code (A)
-    gl_FragColor = vec4(position, nextOp);
+    // Kill particle if too far from center (when enabled)
+    // Note: The actual state change happens in velocityPipeline.frag
+    // Here we just move dead particles to origin to prevent visual artifacts
+    if (uDistanceKillEnabled > 0.5 && uMaxDistanceFromCenter > 0.0) {
+        if (distFromCenter > uMaxDistanceFromCenter) {
+            position = vec3(0.0); // Move to origin (will be invisible as state is DEAD)
+        }
+    }
+    
+    // ========================================
+    // 7. WRITE RESULTS BACK TO TEXTURE
+    // ========================================
+    
+    // Output: position (RGB), distance from center in alpha for debugging/monitoring
+    // Note: Operation codes are updated by CPU via interrupt, not by GPU
+    gl_FragColor = vec4(position, distFromCenter);
 }

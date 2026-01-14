@@ -20,7 +20,8 @@ const float OP_CUSTOM_2 = 11.0;
 const float OP_CUSTOM_3 = 12.0;
 const float OP_CUSTOM_4 = 13.0;
 const float OP_CUSTOM_5 = 14.0;
-const float OP_MAX = 15.0;
+const float OP_CENTER_PULL = 15.0;
+const float OP_MAX = 16.0;
 
 // Particle states
 const float STATE_DEAD = 0.0;
@@ -197,4 +198,38 @@ vec3 applyVelocity(vec3 position, vec3 velocity, float deltaTime, float maxSpeed
 // ============================================================
 float calcDisplacement(vec3 position, vec3 originalPos) {
     return length(position - originalPos);
+}
+
+// ============================================================
+// UTILITY: Calculate distance from origin (0,0,0)
+// Used for distance-based kill checks
+// ============================================================
+float calcDistanceFromCenter(vec3 position) {
+    return length(position);
+}
+
+// ============================================================
+// OPERATION: Center Pull
+// Gently pulls particles toward origin (0, 0, 0)
+// Strength decreases with distance for smooth behavior
+// ============================================================
+vec3 opCenterPull(vec3 position, vec3 velocity, vec3 center, float strength, float deltaTime) {
+    vec3 toCenter = center - position;
+    float dist = length(toCenter);
+    
+    if (dist > 0.001) {
+        // Gentle pull - strength decreases with distance for stability
+        float pullStrength = strength / (1.0 + dist * 0.1);
+        vec3 pullDir = toCenter / dist;
+        return velocity + pullDir * pullStrength * deltaTime;
+    }
+    return velocity;
+}
+
+// ============================================================
+// UTILITY: Check if particle should be killed based on distance
+// Returns true if particle exceeds max distance from center
+// ============================================================
+bool shouldKillParticle(vec3 position, float maxDistance) {
+    return length(position) > maxDistance;
 }

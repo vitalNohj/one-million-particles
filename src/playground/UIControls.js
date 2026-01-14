@@ -1,4 +1,4 @@
-import { PARTICLES, TIMING } from '../core/constants.js';
+import { PARTICLES, TIMING, PHYSICS } from '../core/constants.js';
 import { getPresetNames, getPreset } from './presets.js';
 
 /**
@@ -28,6 +28,11 @@ export class UIControls {
     this._currentText = '1,000,000\nPARTICLES';
     this._currentCount = PARTICLES.DEFAULT_COUNT;
     this._runtimeMode = true;
+    
+    // Distance control values
+    this._distanceKillEnabled = true;
+    this._maxDistance = PHYSICS.MAX_DISTANCE_FROM_CENTER;
+    this._centerPullStrength = PHYSICS.CENTER_PULL_STRENGTH;
   }
 
   /**
@@ -84,6 +89,41 @@ export class UIControls {
           ).join('')}
         </select>
       </div>
+      
+      <h4 class="controls-section-title">Distance Controls</h4>
+      
+      <div class="controls-group">
+        <div class="controls-checkbox">
+          <input type="checkbox" id="distanceKillCheckbox" ${this._distanceKillEnabled ? 'checked' : ''}>
+          <label for="distanceKillCheckbox">Kill Distant Particles</label>
+        </div>
+        <p class="controls-hint">Particles beyond max distance are removed</p>
+      </div>
+      
+      <div class="controls-group">
+        <div class="controls-label">
+          <span>Max Distance</span>
+          <span id="maxDistanceDisplay">${this._maxDistance}</span>
+        </div>
+        <input type="range" id="maxDistanceSlider" class="controls-slider" 
+          min="10" 
+          max="200" 
+          step="1" 
+          value="${this._maxDistance}">
+      </div>
+      
+      <div class="controls-group">
+        <div class="controls-label">
+          <span>Center Pull Strength</span>
+          <span id="centerPullDisplay">${this._centerPullStrength.toFixed(2)}</span>
+        </div>
+        <input type="range" id="centerPullSlider" class="controls-slider" 
+          min="0" 
+          max="5" 
+          step="0.1" 
+          value="${this._centerPullStrength}">
+        <p class="controls-hint">Gently pulls particles toward origin</p>
+      </div>
     `;
 
     parent.appendChild(this.container);
@@ -107,7 +147,13 @@ export class UIControls {
       particleCountInput: document.getElementById('particleCountInput'),
       particleCountDisplay: document.getElementById('particleCountDisplay'),
       maxParticleCountDisplay: document.getElementById('maxParticleCountDisplay'),
-      presetSelect: document.getElementById('presetSelect')
+      presetSelect: document.getElementById('presetSelect'),
+      // Distance controls
+      distanceKillCheckbox: document.getElementById('distanceKillCheckbox'),
+      maxDistanceSlider: document.getElementById('maxDistanceSlider'),
+      maxDistanceDisplay: document.getElementById('maxDistanceDisplay'),
+      centerPullSlider: document.getElementById('centerPullSlider'),
+      centerPullDisplay: document.getElementById('centerPullDisplay')
     };
   }
 
@@ -173,6 +219,56 @@ export class UIControls {
     presetSelect.addEventListener('change', (e) => {
       this._applyPreset(e.target.value);
     });
+
+    // Distance kill checkbox
+    this.elements.distanceKillCheckbox?.addEventListener('change', (e) => {
+      this._distanceKillEnabled = e.target.checked;
+      this._updateDistanceKill();
+    });
+
+    // Max distance slider
+    this.elements.maxDistanceSlider?.addEventListener('input', (e) => {
+      this._maxDistance = parseFloat(e.target.value);
+      this.elements.maxDistanceDisplay.textContent = this._maxDistance;
+      this._updateMaxDistance();
+    });
+
+    // Center pull slider
+    this.elements.centerPullSlider?.addEventListener('input', (e) => {
+      this._centerPullStrength = parseFloat(e.target.value);
+      this.elements.centerPullDisplay.textContent = this._centerPullStrength.toFixed(2);
+      this._updateCenterPull();
+    });
+  }
+
+  /**
+   * Update distance kill enabled state
+   * @private
+   */
+  _updateDistanceKill() {
+    if (this.app?.particleSystem) {
+      this.app.particleSystem.setDistanceKillEnabled(this._distanceKillEnabled);
+    }
+  }
+
+  /**
+   * Update max distance threshold
+   * @private
+   */
+  _updateMaxDistance() {
+    if (this.app?.particleSystem) {
+      this.app.particleSystem.setMaxDistance(this._maxDistance);
+    }
+  }
+
+  /**
+   * Update center pull strength
+   * @private
+   */
+  _updateCenterPull() {
+    if (this.app?.particleSystem) {
+      this.app.particleSystem.setCenterPullStrength(this._centerPullStrength);
+    }
   }
 
   /**
@@ -322,6 +418,48 @@ export class UIControls {
     if (this.elements.particleCountInput) {
       this.elements.particleCountInput.max = maxCount;
     }
+  }
+
+  /**
+   * Set distance kill enabled programmatically
+   * @param {boolean} enabled
+   */
+  setDistanceKillEnabled(enabled) {
+    this._distanceKillEnabled = enabled;
+    if (this.elements.distanceKillCheckbox) {
+      this.elements.distanceKillCheckbox.checked = enabled;
+    }
+    this._updateDistanceKill();
+  }
+
+  /**
+   * Set max distance programmatically
+   * @param {number} distance
+   */
+  setMaxDistance(distance) {
+    this._maxDistance = distance;
+    if (this.elements.maxDistanceSlider) {
+      this.elements.maxDistanceSlider.value = distance;
+    }
+    if (this.elements.maxDistanceDisplay) {
+      this.elements.maxDistanceDisplay.textContent = distance;
+    }
+    this._updateMaxDistance();
+  }
+
+  /**
+   * Set center pull strength programmatically
+   * @param {number} strength
+   */
+  setCenterPullStrength(strength) {
+    this._centerPullStrength = strength;
+    if (this.elements.centerPullSlider) {
+      this.elements.centerPullSlider.value = strength;
+    }
+    if (this.elements.centerPullDisplay) {
+      this.elements.centerPullDisplay.textContent = strength.toFixed(2);
+    }
+    this._updateCenterPull();
   }
 
   /**

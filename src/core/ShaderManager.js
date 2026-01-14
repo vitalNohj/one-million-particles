@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OP_CODES, PARTICLE_STATE } from './OperationCodes.js';
+import { PHYSICS } from './constants.js';
 
 // Import shaders as modules (vite-plugin-glsl handles this)
 import quadVertexShader from '../shaders/compute/quad.vert';
@@ -7,6 +8,7 @@ import positionFragmentShader from '../shaders/compute/position.frag';
 import velocityFragmentShader from '../shaders/compute/velocity.frag';
 import pipelineFragmentShader from '../shaders/compute/pipeline.frag';
 import velocityPipelineFragmentShader from '../shaders/compute/velocityPipeline.frag';
+import copyFragmentShader from '../shaders/compute/copy.frag';
 import particleVertexShader from '../shaders/render/particle.vert';
 import particleFragmentShader from '../shaders/render/particle.frag';
 
@@ -57,6 +59,8 @@ export class ShaderManager {
       uPositionsTexture: { value: null },
       uVelocitiesTexture: { value: null },
       uOriginalPositionsTexture: { value: null },
+      uOperationCodesTexture: { value: null },  // Dedicated operation codes texture
+      uParticleStatesTexture: { value: null },   // Dedicated particle states texture
       uOperationQueueTexture: { value: null },
       
       // Resolution and time
@@ -100,7 +104,15 @@ export class ShaderManager {
       
       // Physics parameters
       uDamping: { value: 0.98 },
-      uMaxSpeed: { value: 100.0 }
+      uMaxSpeed: { value: 100.0 },
+      
+      // Distance kill parameters
+      uMaxDistanceFromCenter: { value: PHYSICS.MAX_DISTANCE_FROM_CENTER },
+      uDistanceKillEnabled: { value: 1.0 },  // 1.0 = enabled, 0.0 = disabled
+      
+      // Center pull parameters
+      uCenterPullTarget: { value: new THREE.Vector3(0, 0, 0) },  // Usually origin
+      uCenterPullStrength: { value: PHYSICS.CENTER_PULL_STRENGTH }
     };
   }
 
@@ -111,6 +123,7 @@ export class ShaderManager {
   _getRenderUniforms() {
     return {
       uPositionsTexture: { value: null },
+      uOriginalPositionsTexture: { value: null }, // For calculating displacement
       uColorTexture: { value: null },
       uHasColorTexture: { value: false },
       uHighlightColor: { value: new THREE.Vector3(0.3, 0.6, 1.0) },
@@ -203,6 +216,30 @@ export class ShaderManager {
     });
 
     this.materials.set('velocityPipeline', material);
+    return material;
+  }
+
+  /**
+   * Create a simple copy material for copying data textures to render targets
+   * @returns {THREE.ShaderMaterial}
+   */
+  createCopyMaterial() {
+    if (this.materials.has('copy')) {
+      return this.materials.get('copy');
+    }
+
+    const material = new THREE.ShaderMaterial({
+      vertexShader: quadVertexShader,
+      fragmentShader: copyFragmentShader,
+      uniforms: {
+        uInputTexture: { value: null },
+        uTextureResolution: { value: new THREE.Vector2(1, 1) }
+      },
+      depthTest: false,
+      depthWrite: false
+    });
+
+    this.materials.set('copy', material);
     return material;
   }
 
@@ -367,7 +404,47 @@ export class ShaderManager {
       uniformUpdates.uMaxSpeed = params.maxSpeed;
     }
     
+    // Distance kill parameters
+    if (params.maxDistanceFromCenter !== undefined) {
+      uniformUpdates.uMaxDistanceFromCenter = params.maxDistanceFromCenter;
+    }
+    if (params.distanceKillEnabled !== undefined) {
+      uniformUpdates.uDistanceKillEnabled = params.distanceKillEnabled ? 1.0 : 0.0;
+    }
+    
+    // Center pull parameters
+    if (params.centerPullTarget !== undefined) {
+      uniformUpdates.uCenterPullTarget = new THREE.Vector3(...params.centerPullTarget);
+    }
+    if (params.centerPullStrength !== undefined) {
+      uniformUpdates.uCenterPullStrength = params.centerPullStrength;
+    }
+    
     this.updatePipelineUniforms(uniformUpdates);
+  }
+
+  /**
+   * Set distance kill parameters
+   * @param {number} maxDistance - Max distance from center before particle is killed
+   * @param {boolean} enabled - Whether distance kill is enabled
+   */
+  setDistanceKill(maxDistance, enabled = true) {
+    this.updatePipelineUniforms({
+      uMaxDistanceFromCenter: maxDistance,
+      uDistanceKillEnabled: enabled ? 1.0 : 0.0
+    });
+  }
+
+  /**
+   * Set center pull parameters
+   * @param {number} strength - Strength of center pull force
+   * @param {number[]} target - Target position [x, y, z] (default: origin)
+   */
+  setCenterPull(strength, target = [0, 0, 0]) {
+    this.updatePipelineUniforms({
+      uCenterPullStrength: strength,
+      uCenterPullTarget: new THREE.Vector3(...target)
+    });
   }
 
   /**

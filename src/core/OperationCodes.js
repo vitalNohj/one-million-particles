@@ -46,8 +46,11 @@ export const OP_CODES = {
   CUSTOM_4: 13.0,
   CUSTOM_5: 14.0,
   
+  // Center pull - gently pulls particles toward origin (0,0,0)
+  CENTER_PULL: 15.0,
+  
   // Maximum operation code (reserved)
-  MAX: 15.0
+  MAX: 16.0
 };
 
 // Particle lifecycle states - stored in velocity texture alpha
@@ -192,5 +195,9 @@ export const DEFAULT_OPERATION_PARAMS = {
     axis: [0, 1, 0],
     strength: 1.0,
     radius: 5.0
+  },
+  [OP_CODES.CENTER_PULL]: {
+    center: [0, 0, 0],
+    strength: 0.5
   }
 };

@@ -1,3 +1,5 @@
+import { OP_CODES, PARTICLE_STATE } from '../core/OperationCodes.js';
+
 /**
  * Buffer utilities for efficient Float32Array management
  * Implements pooling to reduce garbage collection pressure
@@ -65,11 +67,17 @@ export const bufferPool = new BufferPool();
 
 /**
  * Create position data for GPGPU texture
+ * 
+ * TEXTURE ENCODING:
+ * - R, G, B: position (x, y, z)
+ * - A: operation code (default: OP_ALL = 9.0)
+ * 
  * @param {number} count - Number of particles
  * @param {Function} sampleFn - Function that returns [x, y, z] for each sample
+ * @param {number} [opCode] - Operation code to encode in alpha (default: OP_CODES.ALL)
  * @returns {Float32Array} RGBA data (4 floats per particle)
  */
-export function createPositionData(count, sampleFn) {
+export function createPositionData(count, sampleFn, opCode = OP_CODES.ALL) {
   const data = bufferPool.acquire(count * 4);
   
   for (let i = 0; i < count; i++) {
@@ -78,20 +86,36 @@ export function createPositionData(count, sampleFn) {
     data[i4 + 0] = x;
     data[i4 + 1] = y;
     data[i4 + 2] = z;
-    data[i4 + 3] = 0; // Alpha channel (unused or for metadata)
+    data[i4 + 3] = opCode; // Operation code for self-directing shader
   }
   
   return data;
 }
 
 /**
- * Create velocity data for GPGPU texture (initialized to zero)
+ * Create velocity data for GPGPU texture
+ * 
+ * TEXTURE ENCODING:
+ * - R, G, B: velocity (x, y, z) - initialized to zero
+ * - A: particle state (default: STATE_ACTIVE = 1.0)
+ * 
  * @param {number} count - Number of particles
+ * @param {number} [state] - Particle state to encode in alpha (default: PARTICLE_STATE.ACTIVE)
  * @returns {Float32Array} RGBA data (4 floats per particle)
  */
-export function createVelocityData(count) {
-  // Already zeroed from pool or new allocation
-  return bufferPool.acquire(count * 4);
+export function createVelocityData(count, state = PARTICLE_STATE.ACTIVE) {
+  const data = bufferPool.acquire(count * 4);
+  
+  // Initialize velocity to zero, state to ACTIVE
+  for (let i = 0; i < count; i++) {
+    const i4 = i * 4;
+    data[i4 + 0] = 0; // vx
+    data[i4 + 1] = 0; // vy
+    data[i4 + 2] = 0; // vz
+    data[i4 + 3] = state; // Particle state for lifecycle management
+  }
+  
+  return data;
 }
 
 /**

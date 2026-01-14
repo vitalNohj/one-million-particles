@@ -46,7 +46,11 @@ export const PHYSICS = {
   POINTER_FORCE_BASE: 2.5,
   POINTER_FORCE_MULTIPLIER: 4.0,
   // How often to sample pointer start position (in frames)
-  POINTER_SAMPLE_INTERVAL: 10
+  POINTER_SAMPLE_INTERVAL: 10,
+  // Distance kill threshold - particles beyond this distance from origin are killed
+  MAX_DISTANCE_FROM_CENTER: 50.0,
+  // Center pull strength - gently pulls particles toward origin
+  CENTER_PULL_STRENGTH: 0.5
 };
 
 // Text geometry defaults

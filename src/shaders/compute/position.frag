@@ -17,8 +17,10 @@ void main() {
   vec2 uv = gl_FragCoord.xy / uTextureResolution;
   
   // Sample current state
+  vec4 posData = texture2D(uPositionsTexture, uv);
   vec3 originalPosition = texture2D(uOriginalPositionsTexture, uv).rgb;
-  vec3 position = texture2D(uPositionsTexture, uv).rgb;
+  vec3 position = posData.rgb;
+  float opCode = posData.a;  // PRESERVE operation code from texture!
   vec4 velocity = texture2D(uVelocitiesTexture, uv).rgba;
   
   // Calculate displacement from original position
@@ -31,7 +33,8 @@ void main() {
   // Apply velocity
   position += velocity.xyz * uDeltaTime;
 
-  // Output position with displacement magnitude in alpha
-  gl_FragColor = vec4(position, length(diffPosition));
+  // Output position with PRESERVED operation code in alpha
+  // (displacement can be calculated in render shader if needed)
+  gl_FragColor = vec4(position, opCode);
 }
 

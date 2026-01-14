@@ -19,7 +19,9 @@ void main() {
   // Sample current state
   vec3 originalPosition = texture2D(uOriginalPositionsTexture, uv).rgb;
   vec3 position = texture2D(uPositionsTexture, uv).rgb;
-  vec4 velocity = texture2D(uVelocitiesTexture, uv).rgba;
+  vec4 velData = texture2D(uVelocitiesTexture, uv);
+  vec3 velocity = velData.rgb;
+  float particleState = velData.a;  // PRESERVE particle state from texture!
 
   // 1. Base Target (Original Position)
   vec3 target = originalPosition;
@@ -49,7 +51,8 @@ void main() {
 
   // Update velocity to move toward target
   // This behaves like a damped spring system where particles seek the target
-  velocity.xyz = target - position;
+  velocity = target - position;
 
-  gl_FragColor = vec4(velocity.xyz, 1.0);
+  // Output velocity with PRESERVED particle state in alpha
+  gl_FragColor = vec4(velocity, particleState);
 }

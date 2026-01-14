@@ -11,6 +11,8 @@ precision highp float;
 uniform sampler2D uPositionsTexture;
 uniform sampler2D uVelocitiesTexture;
 uniform sampler2D uOriginalPositionsTexture;
+uniform sampler2D uOperationCodesTexture;  // Operation codes per particle (R = op code)
+uniform sampler2D uParticleStatesTexture;   // Particle states per particle (R = state)
 
 // Resolution and time
 uniform vec2 uTextureResolution;
@@ -41,6 +43,14 @@ uniform float uVortexRadius;
 uniform float uDamping;
 uniform float uMaxSpeed;
 
+// Distance kill parameters
+uniform float uMaxDistanceFromCenter;  // Max distance before particle is killed
+uniform float uDistanceKillEnabled;    // 1.0 = enabled, 0.0 = disabled
+
+// Center pull parameters
+uniform vec3 uCenterPullTarget;        // Target point for center pull (usually origin)
+uniform float uCenterPullStrength;     // Strength of center pull force
+
 // Include noise functions
 #include "../includes/noise.glsl"
 
@@ -55,10 +65,14 @@ void main() {
     vec4 velData = texture2D(uVelocitiesTexture, uv);
     vec3 originalPos = texture2D(uOriginalPositionsTexture, uv).rgb;
     
+    // Read from dedicated metadata textures
+    vec4 opCodeData = texture2D(uOperationCodesTexture, uv);
+    vec4 stateData = texture2D(uParticleStatesTexture, uv);
+    
     vec3 position = posData.rgb;
     vec3 velocity = velData.rgb;
-    float opCode = posData.a;
-    float particleState = velData.a;
+    float opCode = opCodeData.r;        // Operation code from dedicated texture
+    float particleState = stateData.r;   // Particle state from dedicated texture
     
     // Use global operation override if set
     if (uGlobalOperation > 0.0) {
@@ -105,6 +119,10 @@ void main() {
         velocity = opVortex(position, velocity, uVortexCenter, uVortexAxis, 
                            uVortexStrength, uVortexRadius, uDeltaTime);
     }
+    else if (opCode == OP_CENTER_PULL) {
+        // Center pull - gently pull toward origin
+        velocity = opCenterPull(position, velocity, uCenterPullTarget, uCenterPullStrength, uDeltaTime);
+    }
     else if (opCode == OP_ALL) {
         // Combined operations
         vec3 target = originalPos;
@@ -144,6 +162,21 @@ void main() {
         velocity = velocity / speed * maxSpd;
     }
     
+    // ========================================
+    // DISTANCE-BASED KILL CHECK
+    // ========================================
+    // Calculate distance from center (origin)
+    float distFromCenter = calcDistanceFromCenter(position);
+    
+    // Kill particle if too far from center (when enabled)
+    if (uDistanceKillEnabled > 0.5 && uMaxDistanceFromCenter > 0.0) {
+        if (distFromCenter > uMaxDistanceFromCenter) {
+            particleState = STATE_DEAD;
+            velocity = vec3(0.0);
+        }
+    }
+    
     // Output: velocity (RGB) + particle state (A)
+    // Note: distFromCenter could be stored in a separate channel if needed for debugging
     gl_FragColor = vec4(velocity, particleState);
 }
